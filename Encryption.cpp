@@ -43,6 +43,38 @@ string from_mi(string s) {
 HWND hKey, hInput, hOutput, hBtnEnc, hBtnDec, hBtnCopy;
 HFONT hFont;
 
+// EDIT 控件子类化：处理 Ctrl+A 全选等快捷键
+LRESULT CALLBACK EditSubclassProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    WNDPROC oldProc = (WNDPROC)GetPropW(hwnd, L"OLD_PROC");
+    if (msg == WM_CHAR && wp == 1) { // Ctrl+A
+        SendMessageW(hwnd, EM_SETSEL, 0, -1);
+        return 0;
+    }
+    return CallWindowProcW(oldProc, hwnd, msg, wp, lp);
+}
+
+void SubclassEdit(HWND hwnd) {
+    SetPropW(hwnd, L"OLD_PROC", (HANDLE)GetWindowLongPtrW(hwnd, GWLP_WNDPROC));
+    SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)EditSubclassProc);
+}
+
+// 根据内容多少动态显示/隐藏垂直滚动条
+void UpdateScrollBar(HWND hEdit) {
+    int lines = (int)SendMessageW(hEdit, EM_GETLINECOUNT, 0, 0);
+    RECT rc;
+    GetClientRect(hEdit, &rc);
+    HDC hdc = GetDC(hEdit);
+    HFONT hf = (HFONT)SendMessageW(hEdit, WM_GETFONT, 0, 0);
+    if (!hf) hf = (HFONT)GetStockObject(SYSTEM_FONT);
+    HFONT oldf = (HFONT)SelectObject(hdc, hf);
+    TEXTMETRICW tm;
+    GetTextMetricsW(hdc, &tm);
+    SelectObject(hdc, oldf);
+    ReleaseDC(hEdit, hdc);
+    int visible = (rc.bottom - rc.top) / tm.tmHeight;
+    ShowScrollBar(hEdit, SB_VERT, lines > visible);
+}
+
 void SetControlFont(HWND hwnd) {
     if (!hFont) {
         hFont = CreateFontW(
@@ -65,7 +97,7 @@ void DoEncrypt() {
     WideCharToMultiByte(CP_UTF8, 0, inBuf, -1, &input[0], inLen, nullptr, nullptr);
 
     if (key.empty() || input.empty()) {
-        MessageBoxW(nullptr, L"密钥和内容不能为空", L"提示", MB_ICONINFORMATION);
+        MessageBoxW(nullptr, L"密钥或内容不能为空", L"提示", MB_ICONINFORMATION);
         return;
     }
 
@@ -75,6 +107,8 @@ void DoEncrypt() {
     wstring wres(resLen, 0);
     MultiByteToWideChar(CP_UTF8, 0, result.c_str(), -1, &wres[0], resLen);
     SetWindowTextW(hOutput, wres.c_str());
+    InvalidateRect(hOutput, NULL, TRUE);
+    UpdateScrollBar(hOutput);
 }
 
 void DoDecrypt() {
@@ -89,7 +123,7 @@ void DoDecrypt() {
     WideCharToMultiByte(CP_UTF8, 0, inBuf, -1, &input[0], inLen, nullptr, nullptr);
 
     if (key.empty() || input.empty()) {
-        MessageBoxW(nullptr, L"密钥和内容不能为空", L"提示", MB_ICONINFORMATION);
+        MessageBoxW(nullptr, L"密钥或内容不能为空", L"提示", MB_ICONINFORMATION);
         return;
     }
 
@@ -99,6 +133,8 @@ void DoDecrypt() {
     wstring wres(resLen, 0);
     MultiByteToWideChar(CP_UTF8, 0, result.c_str(), -1, &wres[0], resLen);
     SetWindowTextW(hOutput, wres.c_str());
+    InvalidateRect(hOutput, NULL, TRUE);
+    UpdateScrollBar(hOutput);
 }
 
 void DoCopy() {
@@ -161,6 +197,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         SetControlFont(hBtnEnc);
         SetControlFont(hBtnDec);
         SetControlFont(hBtnCopy);
+
+        // 子类化 EDIT 控件，支持 Ctrl+A 全选等快捷键
+        SubclassEdit(hKey);
+        SubclassEdit(hInput);
+        SubclassEdit(hOutput);
+
+        // 初始隐藏滚动条（内容为空）
+        ShowScrollBar(hInput, SB_VERT, FALSE);
+        ShowScrollBar(hOutput, SB_VERT, FALSE);
+
         // STATIC 也设字体
         HWND child = GetWindow(hwnd, GW_CHILD);
         while (child) {
@@ -191,6 +237,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             DoDecrypt();
         else if (LOWORD(wp) == IDC_COPY)
             DoCopy();
+        else if (LOWORD(wp) == IDC_INPUT && HIWORD(wp) == EN_CHANGE)
+            UpdateScrollBar(hInput);
         break;
     case WM_ERASEBKGND: {
         HDC hdc = (HDC)wp;
